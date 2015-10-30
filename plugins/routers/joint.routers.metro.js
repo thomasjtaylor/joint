@@ -17,17 +17,17 @@ joint.routers.metro = (function() {
             var diagonalCost = this.diagonalCost || Math.ceil(Math.sqrt(step * step << 1));
 
             return [
-                { offsetX: step  , offsetY: 0     , cost: step         },
+                { offsetX: step  , offsetY: 0     , cost: step },
                 { offsetX: step  , offsetY: step  , cost: diagonalCost },
-                { offsetX: 0     , offsetY: step  , cost: step         },
+                { offsetX: 0     , offsetY: step  , cost: step },
                 { offsetX: -step , offsetY: step  , cost: diagonalCost },
-                { offsetX: -step , offsetY: 0     , cost: step         },
+                { offsetX: -step , offsetY: 0     , cost: step },
                 { offsetX: -step , offsetY: -step , cost: diagonalCost },
-                { offsetX: 0     , offsetY: -step , cost: step         },
+                { offsetX: 0     , offsetY: -step , cost: step },
                 { offsetX: step  , offsetY: -step , cost: diagonalCost }
             ];
         },
-
+        maxAllowedDirectionChange: 45,
         // a simple route used in situations, when main routing method fails
         // (exceed loops, inaccessible).
         fallbackRoute: function(from, to, opts) {

@@ -1,15 +1,5 @@
-if (typeof exports === 'object') {
-
-    var joint = {
-        util: require('../src/core').util,
-        shapes: {},
-        dia: {
-            Element: require('../src/joint.dia.element').Element,
-            Link: require('../src/joint.dia.link').Link
-        }
-    };
-}
-
+//      JointJS library.
+//      (c) 2011-2013 client IO
 
 joint.shapes.erd = {};
 
@@ -59,7 +49,7 @@ joint.shapes.erd.WeakEntity = joint.shapes.erd.Entity.extend({
 joint.shapes.erd.Relationship = joint.dia.Element.extend({
 
     markup: '<g class="rotatable"><g class="scalable"><polygon class="outer"/><polygon class="inner"/></g><text/></g>',
-    
+
     defaults: joint.util.deepSupplement({
 
         type: 'erd.Relationship',
@@ -126,50 +116,50 @@ joint.shapes.erd.Attribute = joint.dia.Element.extend({
                  ref: '.', 'ref-x': .5, 'ref-y': .5,
                  'x-alignment': 'middle', 'y-alignment': 'middle'
              }
-         }
+        }
 
-     }, joint.dia.Element.prototype.defaults)
+    }, joint.dia.Element.prototype.defaults)
 
- });
+});
 
- joint.shapes.erd.Multivalued = joint.shapes.erd.Attribute.extend({
+joint.shapes.erd.Multivalued = joint.shapes.erd.Attribute.extend({
 
-     defaults: joint.util.deepSupplement({
+    defaults: joint.util.deepSupplement({
 
-         type: 'erd.Multivalued',
+        type: 'erd.Multivalued',
 
-         attrs: {
+        attrs: {
              '.inner': { display: 'block' },
              text: { text: 'multivalued' }
          }
-     }, joint.shapes.erd.Attribute.prototype.defaults)
- });
+    }, joint.shapes.erd.Attribute.prototype.defaults)
+});
 
- joint.shapes.erd.Derived = joint.shapes.erd.Attribute.extend({
+joint.shapes.erd.Derived = joint.shapes.erd.Attribute.extend({
 
-     defaults: joint.util.deepSupplement({
+    defaults: joint.util.deepSupplement({
 
-         type: 'erd.Derived',
+        type: 'erd.Derived',
 
-         attrs: {
+        attrs: {
              '.outer': { 'stroke-dasharray': '3,5' },
              text: { text: 'derived' }
          }
 
-     }, joint.shapes.erd.Attribute.prototype.defaults)
- });
+    }, joint.shapes.erd.Attribute.prototype.defaults)
+});
 
- joint.shapes.erd.Key = joint.shapes.erd.Attribute.extend({
+joint.shapes.erd.Key = joint.shapes.erd.Attribute.extend({
 
-     defaults: joint.util.deepSupplement({
+    defaults: joint.util.deepSupplement({
 
-         type: 'erd.Key',
+        type: 'erd.Key',
 
-         attrs: {
+        attrs: {
              ellipse: { 'stroke-width': 4 },
              text: { text: 'key', 'font-weight': '800', 'text-decoration': 'underline' }
          }
-     }, joint.shapes.erd.Attribute.prototype.defaults)
+    }, joint.shapes.erd.Attribute.prototype.defaults)
 });
 
 joint.shapes.erd.Normal = joint.shapes.erd.Attribute.extend({
@@ -209,14 +199,9 @@ joint.shapes.erd.ISA = joint.dia.Element.extend({
 
 joint.shapes.erd.Line = joint.dia.Link.extend({
 
-    defaults: { type: "erd.Line" },
+    defaults: { type: 'erd.Line' },
 
     cardinality: function(value) {
         this.set('labels', [{ position: -20, attrs: { text: { dy: -8, text: value }}}]);
     }
 });
-
-if (typeof exports === 'object') {
-
-    module.exports = joint.shapes.erd;
-}

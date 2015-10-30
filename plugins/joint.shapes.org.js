@@ -1,14 +1,5 @@
-if (typeof exports === 'object') {
-
-    var joint = {
-        util: require('../src/core').util,
-        shapes: {},
-        dia: {
-            Element: require('../src/joint.dia.element').Element,
-            Link: require('../src/joint.dia.link').Link
-        }
-    };
-}
+//      JointJS library.
+//      (c) 2011-2013 client IO
 
 joint.shapes.org = {};
 
@@ -30,22 +21,22 @@ joint.shapes.org.Member = joint.dia.Element.extend({
             },
 
             image: {
-		width: 48, height: 48,
+                width: 48, height: 48,
                 ref: '.card', 'ref-x': 10, 'ref-y': 5
             },
-            
+
             '.rank': {
                 'text-decoration': 'underline',
                 ref: '.card', 'ref-x': 0.9, 'ref-y': 0.2,
                 'font-family': 'Courier New', 'font-size': 14,
-		'text-anchor': 'end'
+                'text-anchor': 'end'
             },
 
             '.name': {
                 'font-weight': '800',
                 ref: '.card', 'ref-x': 0.9, 'ref-y': 0.6,
                 'font-family': 'Courier New', 'font-size': 14,
-		'text-anchor': 'end'
+                'text-anchor': 'end'
             }
         }
     }, joint.dia.Element.prototype.defaults)
@@ -60,9 +51,3 @@ joint.shapes.org.Arrow = joint.dia.Link.extend({
         z: -1
     }
 });
-
-
-if (typeof exports === 'object') {
-
-    module.exports = joint.shapes.org;
-}

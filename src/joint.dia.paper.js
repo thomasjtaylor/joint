@@ -11,12 +11,24 @@ joint.dia.Paper = Backbone.View.extend({
         width: 800,
         height: 600,
         origin: { x: 0, y: 0 }, // x,y coordinates in top-left corner
-        gridSize: 50,
+        gridSize: 1,
         perpendicularLinks: false,
         elementView: joint.dia.ElementView,
         linkView: joint.dia.LinkView,
         snapLinks: false, // false, true, { radius: value }
 
+        // Restrict the translation of elements by given bounding box.
+        // Option accepts a boolean:
+        //  true - the translation is restricted to the paper area
+        //  false - no restrictions
+        // A method:
+        // restrictTranslate: function(elementView) {
+        //     var parentId = elementView.model.get('parent');
+        //     return parentId && this.model.getCell(parentId).getBBox();
+        // },
+        // Or a bounding box:
+        // restrictTranslate: { x: 10, y: 10, width: 790, height: 590 }
+        restrictTranslate: false,
         // Marks all available magnets with 'available-magnet' class name and all available cells with
         // 'available-cell' class name. Marks them when dragging a link is started and unmark
         // when the dragging is stopped.
@@ -26,6 +38,14 @@ joint.dia.Paper = Backbone.View.extend({
         // Value could be the Backbone.model or a function returning the Backbone.model
         // defaultLink: function(elementView, magnet) { return condition ? new customLink1() : new customLink2() }
         defaultLink: new joint.dia.Link,
+
+        // A connector that is used by links with no connector defined on the model.
+        // e.g. { name: 'rounded', args: { radius: 5 }} or a function
+        defaultConnector: { name: 'normal' },
+
+        // A router that is used by links with no router defined on the model.
+        // e.g. { name: 'oneSide', args: { padding: 10 }} or a function
+        defaultRouter: null,
 
         /* CONNECTING */
 
@@ -59,7 +79,22 @@ joint.dia.Paper = Backbone.View.extend({
         // If enabled only the element on the very front is taken into account for the embedding.
         // If disabled the elements under the dragged view are tested one by one
         // (from front to back) until a valid parent found.
-        frontParentOnly: true
+        frontParentOnly: true,
+
+        // Interactive flags. See online docs for the complete list of interactive flags.
+        interactive: {
+            labelMove: false
+        },
+
+        // When set to true the links can be pinned to the paper.
+        // i.e. link source/target can be a point e.g. link.get('source') ==> { x: 100, y: 100 };
+        linkPinning: true,
+
+        // Allowed number of mousemove events after which the pointerclick event will be still triggered.
+        clickThreshold: 0,
+
+        // The namespace, where all the cell views are defined.
+        cellViewNamespace: joint.shapes
     },
 
     events: {
@@ -73,24 +108,25 @@ joint.dia.Paper = Backbone.View.extend({
         'mouseover .element': 'cellMouseover',
         'mouseover .link': 'cellMouseover',
         'mouseout .element': 'cellMouseout',
-        'mouseout .link': 'cellMouseout'
+        'mouseout .link': 'cellMouseout',
+        'contextmenu': 'contextmenu'
     },
 
     constructor: function(options) {
 
-	this._configure(options);
-	Backbone.View.apply(this, arguments);
+        this._configure(options);
+        Backbone.View.apply(this, arguments);
     },
 
     _configure: function(options) {
 
-	if (this.options) options = _.extend({}, _.result(this, 'options'), options);
-	this.options = options;
+        if (this.options) options = _.merge({}, _.result(this, 'options'), options);
+        this.options = options;
     },
 
     initialize: function() {
 
-        _.bindAll(this, 'addCell', 'sortCells', 'resetCells', 'pointerup', 'asyncRenderCells');
+        _.bindAll(this, 'pointerup');
 
         this.svg = V('svg').node;
         this.viewport = V('g').addClass('viewport').node;
@@ -104,14 +140,17 @@ joint.dia.Paper = Backbone.View.extend({
         this.setOrigin();
         this.setDimensions();
 
-	this.listenTo(this.model, 'add', this.onAddCell);
-	this.listenTo(this.model, 'reset', this.resetCells);
-	this.listenTo(this.model, 'sort', this.sortCells);
+        this.listenTo(this.model, 'add', this.onCellAdded);
+        this.listenTo(this.model, 'remove', this.removeView);
+        this.listenTo(this.model, 'reset', this.resetViews);
+        this.listenTo(this.model, 'sort', this.sortViews);
 
-	$(document).on('mouseup touchend', this.pointerup);
+        $(document).on('mouseup touchend', this.pointerup);
 
         // Hold the value when mouse has been moved: when mouse moved, no click event will be triggered.
-        this._mousemoved = false;
+        this._mousemoved = 0;
+        // Hash of all cell views.
+        this._views = {};
 
         // default cell highlighting
         this.on({ 'cell:highlight': this.onCellHighlight, 'cell:unhighlight': this.onCellUnhighlight });
@@ -120,11 +159,11 @@ joint.dia.Paper = Backbone.View.extend({
     remove: function() {
 
         //clean up all DOM elements/views to prevent memory leaks
-        this.removeCells();
+        this.removeViews();
 
-	$(document).off('mouseup touchend', this.pointerup);
+        $(document).off('mouseup touchend', this.pointerup);
 
-	Backbone.View.prototype.remove.call(this);
+        Backbone.View.prototype.remove.call(this);
     },
 
     setDimensions: function(width, height) {
@@ -156,20 +195,22 @@ joint.dia.Paper = Backbone.View.extend({
         if (_.isObject(gridWidth)) {
             // first parameter is an option object
             opt = gridWidth;
-	    gridWidth = opt.gridWidth || 1;
-	    gridHeight = opt.gridHeight || 1;
+            gridWidth = opt.gridWidth || 1;
+            gridHeight = opt.gridHeight || 1;
             padding = opt.padding || 0;
 
         } else {
 
             opt = opt || {};
-	    gridWidth = gridWidth || 1;
-	    gridHeight = gridHeight || 1;
+            gridWidth = gridWidth || 1;
+            gridHeight = gridHeight || 1;
             padding = padding || 0;
         }
 
-	// Calculate the paper size to accomodate all the graph's elements.
-	var bbox = V(this.viewport).bbox(true, this.svg);
+        padding = joint.util.normalizeSides(padding);
+
+        // Calculate the paper size to accomodate all the graph's elements.
+        var bbox = V(this.viewport).bbox(true, this.svg);
 
         var currentScale = V(this.viewport).scale();
 
@@ -178,41 +219,45 @@ joint.dia.Paper = Backbone.View.extend({
         bbox.width *= currentScale.sx;
         bbox.height *= currentScale.sy;
 
-	var calcWidth = Math.max(Math.ceil((bbox.width + bbox.x) / gridWidth), 1) * gridWidth;
-	var calcHeight = Math.max(Math.ceil((bbox.height + bbox.y) / gridHeight), 1) * gridHeight;
+        var calcWidth = Math.max(Math.ceil((bbox.width + bbox.x) / gridWidth), 1) * gridWidth;
+        var calcHeight = Math.max(Math.ceil((bbox.height + bbox.y) / gridHeight), 1) * gridHeight;
 
         var tx = 0;
         var ty = 0;
 
         if ((opt.allowNewOrigin == 'negative' && bbox.x < 0) || (opt.allowNewOrigin == 'positive' && bbox.x >= 0) || opt.allowNewOrigin == 'any') {
             tx = Math.ceil(-bbox.x / gridWidth) * gridWidth;
-            tx += padding;
+            tx += padding.left;
             calcWidth += tx;
         }
 
         if ((opt.allowNewOrigin == 'negative' && bbox.y < 0) || (opt.allowNewOrigin == 'positive' && bbox.y >= 0) || opt.allowNewOrigin == 'any') {
             ty = Math.ceil(-bbox.y / gridHeight) * gridHeight;
-            ty += padding;
+            ty += padding.top;
             calcHeight += ty;
         }
 
-        calcWidth += padding;
-        calcHeight += padding;
+        calcWidth += padding.right;
+        calcHeight += padding.bottom;
 
         // Make sure the resulting width and height are greater than minimum.
         calcWidth = Math.max(calcWidth, opt.minWidth || 0);
         calcHeight = Math.max(calcHeight, opt.minHeight || 0);
 
+        // Make sure the resulting width and height are lesser than maximum.
+        calcWidth = Math.min(calcWidth, opt.maxWidth || Number.MAX_VALUE);
+        calcHeight = Math.min(calcHeight, opt.maxHeight || Number.MAX_VALUE);
+
         var dimensionChange = calcWidth != this.options.width || calcHeight != this.options.height;
         var originChange = tx != this.options.origin.x || ty != this.options.origin.y;
 
-	// Change the dimensions only if there is a size discrepency or an origin change
+        // Change the dimensions only if there is a size discrepency or an origin change
         if (originChange) {
             this.setOrigin(tx, ty);
         }
-	if (dimensionChange) {
-	    this.setDimensions(calcWidth, calcHeight);
-	}
+        if (dimensionChange) {
+            this.setDimensions(calcWidth, calcHeight);
+        }
     },
 
     scaleContentToFit: function(opt) {
@@ -310,55 +355,110 @@ joint.dia.Paper = Backbone.View.extend({
         return bbox;
     },
 
-    createViewForModel: function(cell) {
+    // Returns a geometry rectangle represeting the entire
+    // paper area (coordinates from the left paper border to the right one
+    // and the top border to the bottom one).
+    getArea: function() {
 
-        var view;
-        
-        var type = cell.get('type');
-        var module = type.split('.')[0];
-        var entity = type.split('.')[1];
+        var transformationMatrix = this.viewport.getCTM().inverse();
+        var noTransformationBBox = { x: 0, y: 0, width: this.options.width, height: this.options.height };
 
-        // If there is a special view defined for this model, use that one instead of the default `elementView`/`linkView`.
-        if (joint.shapes[module] && joint.shapes[module][entity + 'View']) {
-
-            view = new joint.shapes[module][entity + 'View']({ model: cell, interactive: this.options.interactive });
-            
-        } else if (cell instanceof joint.dia.Element) {
-                
-            view = new this.options.elementView({ model: cell, interactive: this.options.interactive });
-
-        } else {
-
-            view = new this.options.linkView({ model: cell, interactive: this.options.interactive });
-        }
-
-        return view;
+        return g.rect(V.transformRect(noTransformationBBox, transformationMatrix));
     },
 
-    onAddCell: function(cell, graph, options) {
+    getRestrictedArea: function() {
 
-        if (this.options.async && options.async !== false && _.isNumber(options.position)) {
+        var restrictedArea;
+
+        if (_.isFunction(this.options.restrictTranslate)) {
+            // A method returning a bounding box
+            restrictedArea = this.options.restrictTranslate.apply(this, arguments);
+        } else if (this.options.restrictTranslate === true) {
+            // The paper area
+            restrictedArea = this.getArea();
+        } else {
+            // Either false or a bounding box
+            restrictedArea = this.options.restrictTranslate || null;
+        }
+
+        return restrictedArea;
+    },
+
+    createViewForModel: function(cell) {
+
+        // A class taken from the paper options.
+        var optionalViewClass;
+
+        // A default basic class (either dia.ElementView or dia.LinkView)
+        var defaultViewClass;
+
+        // A special class defined for this model in the corresponding namespace.
+        // e.g. joint.shapes.basic.Rect searches for joint.shapes.basic.RectView
+        var namespace = this.options.cellViewNamespace;
+        var type = cell.get('type') + 'View';
+        var namespaceViewClass = joint.util.getByPath(namespace, type, '.');
+
+        if (cell.isLink()) {
+            optionalViewClass = this.options.linkView;
+            defaultViewClass = joint.dia.LinkView;
+        } else {
+            optionalViewClass = this.options.elementView;
+            defaultViewClass = joint.dia.ElementView;
+        }
+
+        // a) the paper options view is a class (deprecated)
+        //  1. search the namespace for a view
+        //  2. if no view was found, use view from the paper options
+        // b) the paper options view is a function
+        //  1. call the function from the paper options
+        //  2. if no view was return, search the namespace for a view
+        //  3. if no view was found, use the default
+        var ViewClass = (optionalViewClass.prototype instanceof Backbone.View)
+            ? namespaceViewClass || optionalViewClass
+            : optionalViewClass.call(this, cell) || namespaceViewClass || defaultViewClass;
+
+        return new ViewClass({
+            model: cell,
+            interactive: this.options.interactive
+        });
+    },
+
+    onCellAdded: function(cell, graph, opt) {
+
+        if (this.options.async && opt.async !== false && _.isNumber(opt.position)) {
 
             this._asyncCells = this._asyncCells || [];
             this._asyncCells.push(cell);
 
-            if (options.position == 0) {
+            if (opt.position == 0) {
 
-                if (this._frameId) throw 'another asynchronous rendering in progress';
+                if (this._frameId) throw new Error('another asynchronous rendering in progress');
 
-                this.asyncRenderCells(this._asyncCells);
+                this.asyncRenderViews(this._asyncCells, opt);
                 delete this._asyncCells;
             }
 
         } else {
 
-            this.addCell(cell);
+            this.renderView(cell);
         }
     },
 
-    addCell: function(cell) {
+    removeView: function(cell) {
 
-        var view = this.createViewForModel(cell);
+        var view = this._views[cell.id];
+
+        if (view) {
+            view.remove();
+            delete this._views[cell.id];
+        }
+
+        return view;
+    },
+
+    renderView: function(cell) {
+
+        var view = this._views[cell.id] = this.createViewForModel(cell);
 
         V(this.viewport).append(view.el);
         view.paper = this;
@@ -367,9 +467,11 @@ joint.dia.Paper = Backbone.View.extend({
         // This is the only way to prevent image dragging in Firefox that works.
         // Setting -moz-user-select: none, draggable="false" attribute or user-drag: none didn't help.
         $(view.el).find('image').on('dragstart', function() { return false; });
+
+        return view;
     },
 
-    beforeRenderCells: function(cells) {
+    beforeRenderViews: function(cells) {
 
         // Make sure links are always added AFTER elements.
         // They wouldn't find their sources/targets in the DOM otherwise.
@@ -378,82 +480,90 @@ joint.dia.Paper = Backbone.View.extend({
         return cells;
     },
 
-    afterRenderCells: function() {
+    afterRenderViews: function() {
 
-        this.sortCells();
+        this.sortViews();
     },
 
-    resetCells: function(cellsCollection) {
+    resetViews: function(cellsCollection, opt) {
 
         $(this.viewport).empty();
 
+        // clearing views removes any event listeners
+        this.removeViews();
+
         var cells = cellsCollection.models.slice();
 
-        cells = this.beforeRenderCells(cells);
-        
-	if (this._frameId) {
-
-	    joint.util.cancelFrame(this._frameId);
-            delete this._frameId;
-	}
-
-	if (this.options.async) {
-
-	    this.asyncRenderCells(cells);
-            // Sort the cells once all elements rendered (see asyncRenderCells()).
-
-	} else {
-
-            _.each(cells, this.addCell, this);
-
-            // Sort the cells in the DOM manually as we might have changed the order they
-            // were added to the DOM (see above).
-            this.sortCells();
-	}
-    },
-
-    removeCells: function() {
-
-        this.model.get('cells').each(function(cell) {
-            var view = this.findViewByModel(cell);
-            view && view.remove();
-        }, this);
-    },
-
-    asyncBatchAdded: _.identity,
-
-    asyncRenderCells: function(cells, opt) {
-
-        var done = false;
+        // `beforeRenderViews()` can return changed cells array (e.g sorted).
+        cells = this.beforeRenderViews(cells, opt) || cells;
 
         if (this._frameId) {
 
-            _.each(_.range(this.options.async && this.options.async.batchSize || 50), function() {
+            joint.util.cancelFrame(this._frameId);
+            delete this._frameId;
+        }
 
-                var cell = cells.shift();
-	        done = !cell;
-                if (!done) this.addCell(cell);
+        if (this.options.async) {
+
+            this.asyncRenderViews(cells, opt);
+            // Sort the cells once all elements rendered (see asyncRenderViews()).
+
+        } else {
+
+            _.each(cells, this.renderView, this);
+
+            // Sort the cells in the DOM manually as we might have changed the order they
+            // were added to the DOM (see above).
+            this.sortViews();
+        }
+    },
+
+    removeViews: function() {
+
+        _.invoke(this._views, 'remove');
+
+        this._views = {};
+    },
+
+    asyncBatchAdded: _.noop,
+
+    asyncRenderViews: function(cells, opt) {
+
+        if (this._frameId) {
+
+            var batchSize = (this.options.async && this.options.async.batchSize) || 50;
+            var batchCells = cells.splice(0, batchSize);
+            var collection = this.model.get('cells');
+
+            _.each(batchCells, function(cell) {
+
+                // The cell has to be part of the graph collection.
+                // There is a chance in asynchronous rendering
+                // that a cell was removed before it's rendered to the paper.
+                if (cell.collection === collection) this.renderView(cell);
 
             }, this);
 
             this.asyncBatchAdded();
         }
 
-        if (done) {
+        if (!cells.length) {
 
+            // No cells left to render.
             delete this._frameId;
-            this.afterRenderCells();
-	    this.trigger('render:done', opt);
+            this.afterRenderViews(opt);
+            this.trigger('render:done', opt);
 
-	} else {
+        } else {
 
-            this._frameId = joint.util.nextFrame(_.bind(function() {
-		this.asyncRenderCells(cells, opt);
-	    }, this));
+            // Schedule a next batch to render.
+            this._frameId = joint.util.nextFrame(function() {
+                this.asyncRenderViews(cells, opt);
+            }, this);
         }
     },
 
-    sortCells: function() {
+    sortViews: function() {
 
         // Run insertion sort algorithm in order to efficiently sort DOM elements according to their
         // associated model `z` attribute.
@@ -461,52 +571,12 @@ joint.dia.Paper = Backbone.View.extend({
         var $cells = $(this.viewport).children('[model-id]');
         var cells = this.model.get('cells');
 
-        this.sortElements($cells, function(a, b) {
+        joint.util.sortElements($cells, function(a, b) {
 
             var cellA = cells.get($(a).attr('model-id'));
             var cellB = cells.get($(b).attr('model-id'));
-            
+
             return (cellA.get('z') || 0) > (cellB.get('z') || 0) ? 1 : -1;
-        });
-    },
-
-    // Highly inspired by the jquery.sortElements plugin by Padolsey.
-    // See http://james.padolsey.com/javascript/sorting-elements-with-jquery/.
-    sortElements: function(elements, comparator) {
-
-        var $elements = $(elements);
-        
-        var placements = $elements.map(function() {
-
-            var sortElement = this;
-            var parentNode = sortElement.parentNode;
-
-            // Since the element itself will change position, we have
-            // to have some way of storing it's original position in
-            // the DOM. The easiest way is to have a 'flag' node:
-            var nextSibling = parentNode.insertBefore(
-                document.createTextNode(''),
-                sortElement.nextSibling
-            );
-
-            return function() {
-                
-                if (parentNode === this) {
-                    throw new Error(
-                        "You can't sort elements if any one is a descendant of another."
-                    );
-                }
-                
-                // Insert before flag:
-                parentNode.insertBefore(this, nextSibling);
-                // Remove flag:
-                parentNode.removeChild(nextSibling);
-                
-            };
-        });
-
-        return Array.prototype.sort.call($elements, comparator).each(function(i) {
-            placements[i].call(this);
         });
     },
 
@@ -527,7 +597,7 @@ joint.dia.Paper = Backbone.View.extend({
         var oldTx = this.options.origin.x;
         var oldTy = this.options.origin.y;
 
-        // TODO: V.scale() doesn't support setting scale origin. #Fix        
+        // TODO: V.scale() doesn't support setting scale origin. #Fix
         if (ox || oy || oldTx || oldTy) {
 
             var newTx = oldTx - ox * (sx - 1);
@@ -537,21 +607,21 @@ joint.dia.Paper = Backbone.View.extend({
 
         V(this.viewport).scale(sx, sy);
 
-	this.trigger('scale', sx, sy, ox, oy);
+        this.trigger('scale', sx, sy, ox, oy);
 
         return this;
     },
 
     rotate: function(deg, ox, oy) {
-        
+
         // If the origin is not set explicitely, rotate around the center. Note that
         // we must use the plain bounding box (`this.el.getBBox()` instead of the one that gives us
         // the real bounding box (`bbox()`) including transformations).
         if (_.isUndefined(ox)) {
 
             var bbox = this.viewport.getBBox();
-            ox = bbox.width/2;
-            oy = bbox.height/2;
+            ox = bbox.width / 2;
+            oy = bbox.height / 2;
         }
 
         V(this.viewport).rotate(deg, ox, oy);
@@ -559,58 +629,53 @@ joint.dia.Paper = Backbone.View.extend({
 
     // Find the first view climbing up the DOM tree starting at element `el`. Note that `el` can also
     // be a selector or a jQuery object.
-    findView: function(el) {
+    findView: function($el) {
 
-        var $el = this.$(el);
+        var el = _.isString($el)
+            ? this.viewport.querySelector($el)
+            : $el instanceof $ ? $el[0] : $el;
 
-        if ($el.length === 0 || $el[0] === this.el) {
+        while (el && el !== this.el && el !== document) {
 
-            return undefined;
+            var id = el.getAttribute('model-id');
+            if (id) return this._views[id];
+
+            el = el.parentNode;
         }
 
-        if ($el.data('view')) {
-
-            return $el.data('view');
-        }
-
-        return this.findView($el.parent());
+        return undefined;
     },
 
     // Find a view for a model `cell`. `cell` can also be a string representing a model `id`.
     findViewByModel: function(cell) {
 
         var id = _.isString(cell) ? cell : cell.id;
-        
-        var $view = this.$('[model-id="' + id + '"]');
-        if ($view.length) {
 
-            return $view.data('view');
-        }
-        return undefined;
+        return this._views[id];
     },
 
     // Find all views at given point
     findViewsFromPoint: function(p) {
 
-	p = g.point(p);
+        p = g.point(p);
 
-        var views = _.map(this.model.getElements(), this.findViewByModel);
+        var views = _.map(this.model.getElements(), this.findViewByModel, this);
 
-	return _.filter(views, function(view) {
-	    return view && g.rect(V(view.el).bbox(false, this.viewport)).containsPoint(p);
-	}, this);
+        return _.filter(views, function(view) {
+            return view && g.rect(view.vel.bbox(false, this.viewport)).containsPoint(p);
+        }, this);
     },
 
     // Find all views in given area
     findViewsInArea: function(r) {
 
-	r = g.rect(r);
+        r = g.rect(r);
 
-        var views = _.map(this.model.getElements(), this.findViewByModel);
+        var views = _.map(this.model.getElements(), this.findViewByModel, this);
 
-	return _.filter(views, function(view) {
-	    return view && r.intersect(g.rect(V(view.el).bbox(false, this.viewport)));
-	}, this);
+        return _.filter(views, function(view) {
+            return view && r.intersect(g.rect(view.vel.bbox(false, this.viewport)));
+        }, this);
     },
 
     getModelById: function(id) {
@@ -621,13 +686,45 @@ joint.dia.Paper = Backbone.View.extend({
     snapToGrid: function(p) {
 
         // Convert global coordinates to the local ones of the `viewport`. Otherwise,
-        // improper transformation would be applied when the viewport gets transformed (scaled/rotated). 
+        // improper transformation would be applied when the viewport gets transformed (scaled/rotated).
         var localPoint = V(this.viewport).toLocalPoint(p.x, p.y);
 
         return {
             x: g.snapToGrid(localPoint.x, this.options.gridSize),
             y: g.snapToGrid(localPoint.y, this.options.gridSize)
         };
+    },
+
+    // Transform client coordinates to the paper local coordinates.
+    // Useful when you have a mouse event object and you'd like to get coordinates
+    // inside the paper that correspond to `evt.clientX` and `evt.clientY` point.
+    // Exmaple: var paperPoint = paper.clientToLocalPoint({ x: evt.clientX, y: evt.clientY });
+    clientToLocalPoint: function(p) {
+
+        var svgPoint = this.svg.createSVGPoint();
+        svgPoint.x = p.x;
+        svgPoint.y = p.y;
+
+        // This is a hack for Firefox! If there wasn't a fake (non-visible) rectangle covering the
+        // whole SVG area, `$(paper.svg).offset()` used below won't work.
+        var fakeRect = V('rect', { width: this.options.width, height: this.options.height, x: 0, y: 0, opacity: 0 });
+        V(this.svg).prepend(fakeRect);
+
+        var paperOffset = $(this.svg).offset();
+
+        // Clean up the fake rectangle once we have the offset of the SVG document.
+        fakeRect.remove();
+
+        var scrollTop = document.body.scrollTop || document.documentElement.scrollTop;
+        var scrollLeft = document.body.scrollLeft || document.documentElement.scrollLeft;
+
+        svgPoint.x += scrollLeft - paperOffset.left;
+        svgPoint.y += scrollTop - paperOffset.top;
+
+        // Transform point into the viewport coordinate system.
+        var pointTransformed = svgPoint.matrixTransform(this.viewport.getCTM().inverse());
+
+        return pointTransformed;
     },
 
     getDefaultLink: function(cellView, magnet) {
@@ -654,19 +751,21 @@ joint.dia.Paper = Backbone.View.extend({
     // ------------
 
     mousedblclick: function(evt) {
-        
+
         evt.preventDefault();
         evt = joint.util.normalizeEvent(evt);
-        
+
         var view = this.findView(evt.target);
+        if (this.guard(evt, view)) return;
+
         var localPoint = this.snapToGrid({ x: evt.clientX, y: evt.clientY });
 
         if (view) {
-            
+
             view.pointerdblclick(evt, localPoint.x, localPoint.y);
-            
+
         } else {
-            
+
             this.trigger('blank:pointerdblclick', evt, localPoint.x, localPoint.y);
         }
     },
@@ -674,40 +773,77 @@ joint.dia.Paper = Backbone.View.extend({
     mouseclick: function(evt) {
 
         // Trigger event when mouse not moved.
-        if (!this._mousemoved) {
-            
+        if (this._mousemoved <= this.options.clickThreshold) {
+
             evt = joint.util.normalizeEvent(evt);
 
             var view = this.findView(evt.target);
+            if (this.guard(evt, view)) return;
+
             var localPoint = this.snapToGrid({ x: evt.clientX, y: evt.clientY });
 
             if (view) {
 
                 view.pointerclick(evt, localPoint.x, localPoint.y);
-                
+
             } else {
 
                 this.trigger('blank:pointerclick', evt, localPoint.x, localPoint.y);
             }
         }
 
-        this._mousemoved = false;
+        this._mousemoved = 0;
+    },
+
+    // Guard guards the event received. If the event is not interesting, guard returns `true`.
+    // Otherwise, it return `false`.
+    guard: function(evt, view) {
+
+        if (view && view.model && (view.model instanceof joint.dia.Cell)) {
+
+            return false;
+
+        } else if (this.svg === evt.target || this.el === evt.target || $.contains(this.svg, evt.target)) {
+
+            return false;
+        }
+
+        return true;    // Event guarded. Paper should not react on it in any way.
+    },
+
+    contextmenu: function(evt) {
+
+        evt = joint.util.normalizeEvent(evt);
+        var view = this.findView(evt.target);
+        if (this.guard(evt, view)) return;
+
+        var localPoint = this.snapToGrid({ x: evt.clientX, y: evt.clientY });
+
+        if (view) {
+
+            view.contextmenu(evt, localPoint.x, localPoint.y);
+
+        } else {
+
+            this.trigger('blank:contextmenu', evt, localPoint.x, localPoint.y);
+        }
     },
 
     pointerdown: function(evt) {
 
         evt = joint.util.normalizeEvent(evt);
-        
+
         var view = this.findView(evt.target);
+        if (this.guard(evt, view)) return;
 
         var localPoint = this.snapToGrid({ x: evt.clientX, y: evt.clientY });
-        
+
         if (view) {
 
             this.sourceView = view;
 
             view.pointerdown(evt, localPoint.x, localPoint.y);
-            
+
         } else {
 
             this.trigger('blank:pointerdown', evt, localPoint.x, localPoint.y);
@@ -721,8 +857,8 @@ joint.dia.Paper = Backbone.View.extend({
 
         if (this.sourceView) {
 
-            // Mouse moved.
-            this._mousemoved = true;
+            // Mouse moved counter.
+            this._mousemoved++;
 
             var localPoint = this.snapToGrid({ x: evt.clientX, y: evt.clientY });
 
@@ -735,26 +871,26 @@ joint.dia.Paper = Backbone.View.extend({
         evt = joint.util.normalizeEvent(evt);
 
         var localPoint = this.snapToGrid({ x: evt.clientX, y: evt.clientY });
-        
+
         if (this.sourceView) {
 
             this.sourceView.pointerup(evt, localPoint.x, localPoint.y);
 
             //"delete sourceView" occasionally throws an error in chrome (illegal access exception)
-	    this.sourceView = null;
+            this.sourceView = null;
 
         } else {
 
             this.trigger('blank:pointerup', evt, localPoint.x, localPoint.y);
         }
     },
-    
+
     cellMouseover: function(evt) {
 
         evt = joint.util.normalizeEvent(evt);
         var view = this.findView(evt.target);
         if (view) {
-
+            if (this.guard(evt, view)) return;
             view.mouseover(evt);
         }
     },
@@ -764,7 +900,7 @@ joint.dia.Paper = Backbone.View.extend({
         evt = joint.util.normalizeEvent(evt);
         var view = this.findView(evt.target);
         if (view) {
-
+            if (this.guard(evt, view)) return;
             view.mouseout(evt);
         }
     }

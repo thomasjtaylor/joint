@@ -4,8 +4,8 @@ var paper = new joint.dia.Paper({
 
     el: $('#paper'),
     width: 800,
-    height: 1200,
-    gridSize: 10,
+    height: 1400,
+    gridSize: 1,
     perpendicularLinks: false,
     model: graph,
     linkView: joint.dia.LinkView.extend({
@@ -247,7 +247,7 @@ var link6 = new joint.dia.Link({
     target: { id: r11.id },
     labels: [
         { position: 10, attrs: { text: { text: '1..n' } }},
-        { position: .5, attrs: { text: { text: 'Foo', fill: 'white', 'font-family': 'sans-serif' }, rect: { stroke: '#F39C12', 'stroke-width': 20, rx: 5, ry: 5 } }},
+        { position: { distance: .5, offset: { x: 20, y: 20 } }, attrs: { text: { text: 'Foo', fill: 'white', 'font-family': 'sans-serif' }, rect: { stroke: '#F39C12', 'stroke-width': 20, rx: 5, ry: 5 } }},
         { position: -10, attrs: { text: { text: '*' } }}
     ],
     attrs: {
@@ -382,4 +382,21 @@ V(paper.viewport).defs().append(diamondMarker);
 
 graph.addCell([link10]);
 
+// OneSide routing
 
+title(250, 1200, 'OneSide routing');
+
+var r19 = r17.clone();
+graph.addCell(r19);
+r19.translate(0, 150);
+
+var r20 = r19.clone();
+graph.addCell(r20);
+r20.translate(200, 0);
+
+var link12 = new joint.dia.Link({
+    source: { id: r19.id },
+    target: { id: r20.id },
+    router: { name: 'oneSide', args: { side: 'bottom' }}
+});
+graph.addCell(link12);

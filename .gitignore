@@ -1,2 +1,4 @@
+build/min/
 node_modules/
-docs/
+lib/*/*
+npm-debug.log
